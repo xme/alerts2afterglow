@@ -7,12 +7,14 @@
 # History
 # -------
 # 2011/10/24	Created
+# 2011/12/22	Changed the way a given time interval can be processed
 #
 
 use strict;
 use Getopt::Long;
 use DBI;
 use Socket;
+use Date::Parse;
 
 my $i;
 my %records;
@@ -30,18 +32,20 @@ my $dbPass;
 my $doReverse = 0;
 my $excludeAlerts = "";
 my $showDuplicate = 0;
-my $interval = "30 minutes";
+my $startTime = "";
+my $endTime = "";
 
 my $result = GetOptions(
-	"debug"		=> \$debug,
-	"help"		=> \$help,
-	"dbname=s"	=> \$dbName,
-	"dbhost=s"	=> \$dbHost,
-	"dbuser=s"	=> \$dbUser,
-	"dbpass=s"	=> \$dbPass,
-	"do-reverse"	=> \$doReverse,
+	"debug"			=> \$debug,
+	"help"			=> \$help,
+	"dbname=s"		=> \$dbName,
+	"dbhost=s"		=> \$dbHost,
+	"dbuser=s"		=> \$dbUser,
+	"dbpass=s"		=> \$dbPass,
+	"do-reverse"		=> \$doReverse,
 	"exclude-alerts=s"	=> \$excludeAlerts,
-	"time-interval=s"	=> \$interval,
+	"start-time=s"		=> \$startTime,
+	"end-time=s"		=> \$endTime,
 	"show-duplicate"	=> \$showDuplicate
 );
 
@@ -49,8 +53,8 @@ my $result = GetOptions(
 if ($help) {
 	print <<_HELP_;
 Usage: $0 --dbpass=password [--dbhost=127.0.0.1] [--dbport=3306] [--dbname=ossec]
-          [--dbuser=ossec] [--exclude-alerts=id1[,id2,...]] [--time-interval="30 minutes"]
-          [--do-reverse] [--show-duplicate] [--help] [--debug]
+          [--dbuser=ossec] [--exclude-alerts=id1[,id2,...]] [--start-time=timestamp]
+          [--end-time=timestamp] [--do-reverse] [--show-duplicate] [--help] [--debug]
 _HELP_
 	exit 0;
 }
@@ -82,22 +86,40 @@ if ($excludeAlerts ne "") {
 	$query = $query . ' and alert.rule_id not in (' . $excludeAlerts . ')';
 }
 
-if ($interval ne "") {
-	my ($intervalValue, $intervalLabel) = split(" ", $interval);
-	$intervalLabel = uc($intervalLabel);
-	if (($intervalLabel ne "SECOND" && 
-	     $intervalLabel ne "MINUTE" &&
-	     $intervalLabel ne "HOUR" &&
-	     $intervalLabel ne "DAY" &&
-	     $intervalLabel ne "WEEK") ||
-	     (!($intervalValue =~ /^\d+$/))) {
-		print STDERR "Incorrect time interval: $interval\n";
+# Process the time interval
+# Supported timestamps are: "yyyy/mm/dd hh:mm:ss" or UNIX epoch format
+if ($startTime eq "") {
+	# Default: startTime is now() - 30 minutes
+	$startTime = time() - 1800;
+}
+else {
+	if (!($startTime =~ /^\d+$/)) {
+		# Convert to epoch format
+		$startTime = str2time($startTime);
+	}
+	if (time() <= $startTime) {
+		print STDERR "start time cannot be in the future\n";
 		exit 1;
 	}
-	$debug && print STDERR "Time interval: $interval\n";
-	$query = $query . ' and alert.timestamp >= unix_timestamp(date_sub(now(), interval ' . $interval .'))';
+}
+if ($endTime ne "") {
+	if (!($endTime =~ /^\d+$/)) {
+		# Convert to epoch format
+		$endTime = str2time($endTime);
+	}
+	if ($startTime >= $endTime) {
+		print STDERR "start time must be smaller then end time\n";
+		exit 1;
+	}
+	$debug && print STDERR "Time interval: $startTime to $endTime\n";
+	$query = $query . ' and alert.timestamp >= "'. $startTime .'" and alert.timestamp <= "' . $endTime . '"';
+}
+else {
+	$debug && print STDERR "Time interval: $startTime to NOW\n";
+	$query = $query . ' and alert.timestamp >= "'. $startTime .'"';
 }
 
+print "DEBUG: $query\n";
 my $sth = $dbh->prepare($query . ";");
 $sth->execute();
 my ($alertTimeStamp, $alertSrcIP, $sigDesc, $locationName);
